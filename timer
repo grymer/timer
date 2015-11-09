@@ -1,0 +1,124 @@
+/*
+* timer.c, v1.0.0
+*
+* Copyright (C) 2015 Graham Rymer. All Rights Reserved
+* Distributed under the MIT Licence (see bundled file "LICENSE", or copy at (http://opensource.org/licenses/MIT")
+*
+* This program measures web application response times.
+*
+* Based on code and ideas by Sebastian Schinzel (schinzel⚹fh-muenster◦de).
+*
+*/
+
+#include <stdio.h>
+#include <time.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+#define MAXBUF 32 // Just enough to fit status line in response
+
+static const char *request = "HEAD / HTTP/1.0\n";
+
+void PANIC(char *msg)
+{
+ printf(msg);
+ exit(EXIT_FAILURE);
+}
+
+/*
+ * Call this function to start timer
+ */
+struct timespec timer_start(){
+    struct timespec start_time;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &start_time);
+    return start_time;
+}
+
+/*
+ * Call this function to end timer
+ */
+struct timespec timer_end(struct timespec start_time){
+    struct timespec end_time, tmp;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
+
+	if ((end_time.tv_nsec - start_time.tv_nsec) < 0) {
+		tmp.tv_sec = end_time.tv_sec - start_time.tv_sec -1;
+		tmp.tv_nsec = 1000000000 + end_time.tv_nsec - start_time.tv_nsec;
+	} else {
+		tmp.tv_sec = end_time.tv_sec - start_time.tv_sec;
+		tmp.tv_nsec = end_time.tv_nsec - start_time.tv_nsec;
+	}
+	return tmp;
+}
+
+/*
+ * First argument is target server name/IPv4 address, second is port, third is cookie string
+ */
+int main(int argc, char **argv)
+{
+	struct timespec vartime, elapsed;
+	int sockfd, err;
+	char *tx, rx[MAXBUF];
+	struct addrinfo hints;
+	struct addrinfo *target;
+
+/*
+ * Resolve address using getaddrinfo
+ */
+bzero(&hints, sizeof(hints));
+hints.ai_family = AF_INET;
+hints.ai_socktype = SOCK_STREAM;
+if((err = getaddrinfo(argv[1], argv[2], &hints, &target)) != 0)
+	PANIC((char *)gai_strerror(err));
+
+/*
+ * Get socket
+ */
+if ( (sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0 ) // AF_INET is IPv4, SOCK_STREAM is TCP, ptotocol 0 is IP.
+	PANIC("Socket");
+
+/*
+ * Connect
+ */
+if (connect(sockfd , target->ai_addr, target->ai_addrlen) < 0)
+	PANIC("Connect");
+
+/*
+ * Append third command line parameter to request, then send request
+ */
+tx = malloc(strlen(request) + strlen(argv[3]) + 3); // +3 for NULL termination and two new lines
+strcpy(tx, request);
+strcpy(tx + strlen(request), argv[3]);
+strcpy(tx + strlen(request) + strlen(argv[3]), "\n\n");
+
+if(send(sockfd, tx, strlen(tx) - 1, 0) < 0) // Don't send last byte yet...
+	PANIC("Tx");
+
+vartime = timer_start(); // Start timer...
+
+if(send(sockfd, tx + strlen(tx) - 1, 1, 0) < 0) // Now send last byte!..
+	PANIC("Tx");
+
+/*
+ * Get response
+ */
+if(recv(sockfd, rx, sizeof(rx), 0) < 0)
+	PANIC("Rx");
+
+elapsed = timer_end(vartime); // Stop timer
+
+printf(strtok(rx, "\r\n")); // Hack out status line from response
+
+printf(",%ld,%ld\n", elapsed.tv_sec, elapsed.tv_nsec);
+
+/*
+ * Cleanup
+ */
+close(sockfd);
+free(tx);
+freeaddrinfo(target);
+return(0);
+}
